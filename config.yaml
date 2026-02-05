@@ -1,0 +1,38 @@
+sources:
+  greenhouse:
+    # These are company "board tokens" used by Greenhouse job boards:
+    # https://boards.greenhouse.io/<token>
+    boards:
+      - openai
+      - stripe
+      - jane-street
+  lever:
+    # These are Lever company handles:
+    # https://jobs.lever.co/<handle>
+    handles:
+      - scaleai
+      - anthropic
+
+filters:
+  keywords_any:
+    - math
+    - mathematics
+    - statistics
+    - probabilistic
+    - machine learning
+    - ml
+    - ai
+    - quant
+    - trading
+    - finance
+    - researcher
+    - data scientist
+  location_any:
+    - toronto
+    - ontario
+    - canada
+    - remote
+
+dedupe:
+  # only keep jobs first seen within N days
+  max_age_days: 30
