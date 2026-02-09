@@ -8,8 +8,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 import streamlit as st
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+from docx import Document
+from docx.shared import Pt
 
 LINK_STORE = Path("user_links.json")
 API_KEY_STORE = Path("user_api_key.json")
@@ -93,31 +93,93 @@ def fetch_google_doc_text(link: str) -> str:
     doc_id = extract_google_doc_id(link)
     if not doc_id:
         raise ValueError("Invalid Google Doc link. Ensure it's a shareable document URL.")
-    export_url = f"https://docs.google.com/document/d/{doc_id}/export?format=txt"
+    export_url = f"https://docs.google.com/document/d/{doc_id}/export?format=docx"
     response = requests.get(export_url, timeout=30)
     response.raise_for_status()
-    return response.text
+    document = Document(io.BytesIO(response.content))
+    return docx_to_marked_text(document)
 
 
-def create_pdf_bytes(title: str, body: str) -> bytes:
+def docx_to_marked_text(document: Document) -> str:
+    lines: list[str] = []
+    for paragraph in document.paragraphs:
+        if not paragraph.runs:
+            lines.append("")
+            continue
+        parts: list[str] = []
+        for run in paragraph.runs:
+            text = run.text
+            if not text:
+                continue
+            if run.bold and run.italic:
+                parts.append(f"***{text}***")
+            elif run.bold:
+                parts.append(f"**{text}**")
+            elif run.italic:
+                parts.append(f"*{text}*")
+            else:
+                parts.append(text)
+        lines.append("".join(parts))
+    return "\n".join(lines)
+
+
+def iter_marked_runs(text: str) -> list[tuple[str, bool, bool]]:
+    runs: list[tuple[str, bool, bool]] = []
+    bold = False
+    italic = False
+    buffer: list[str] = []
+    index = 0
+    while index < len(text):
+        if text.startswith("***", index):
+            if buffer:
+                runs.append(("".join(buffer), bold, italic))
+                buffer = []
+            bold = not bold
+            italic = not italic
+            index += 3
+            continue
+        if text.startswith("**", index):
+            if buffer:
+                runs.append(("".join(buffer), bold, italic))
+                buffer = []
+            bold = not bold
+            index += 2
+            continue
+        if text.startswith("*", index):
+            if buffer:
+                runs.append(("".join(buffer), bold, italic))
+                buffer = []
+            italic = not italic
+            index += 1
+            continue
+        buffer.append(text[index])
+        index += 1
+    if buffer:
+        runs.append(("".join(buffer), bold, italic))
+    return runs
+
+
+def create_docx_bytes(title: str, body: str) -> bytes:
     buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
-    text_object = pdf.beginText(50, height - 60)
-    text_object.setFont("Helvetica-Bold", 14)
-    text_object.textLine(title)
-    text_object.setFont("Helvetica", 11)
-    text_object.textLine(" ")
+    document = Document()
+    title_paragraph = document.add_paragraph()
+    title_run = title_paragraph.add_run(title)
+    title_run.bold = True
+    title_run.font.size = Pt(14)
+
+    if body.strip():
+        document.add_paragraph()
+
     for line in body.splitlines():
-        if text_object.getY() < 60:
-            pdf.drawText(text_object)
-            pdf.showPage()
-            text_object = pdf.beginText(50, height - 60)
-            text_object.setFont("Helvetica", 11)
-        text_object.textLine(line)
-    pdf.drawText(text_object)
-    pdf.showPage()
-    pdf.save()
+        paragraph = document.add_paragraph()
+        if not line.strip():
+            continue
+        for segment, bold, italic in iter_marked_runs(line):
+            run = paragraph.add_run(segment)
+            run.bold = bold
+            run.italic = italic
+
+    document.save(buffer)
     buffer.seek(0)
     return buffer.read()
 
@@ -127,8 +189,7 @@ def openai_generate_document(
     model: str,
     document_type: str,
     job: dict,
-    cv_text: str,
-    cover_text: str,
+    source_text: str,
 ) -> str:
     prompt = f"""
 You are updating a {document_type} for a job application.
@@ -138,7 +199,12 @@ Rules:
 - Preserve the candidate's voice, tone, and formatting as much as possible.
 - Make the {document_type} more relevant to the job posting using only existing information.
 - Fix grammar and professionalism issues, but avoid unnecessary changes.
-- Output plain text only, no markdown.
+- Keep line breaks and formatting using these markers only:
+  - Bold: **text**
+  - Italic: *text*
+  - Bold + italic: ***text***
+- Output plain text with the markers above. Do not add markdown headings or lists.
+- Use only the provided {document_type} text. Do not add content from other documents.
 
 Job posting:
 Title: {job.get('title')}
@@ -147,11 +213,8 @@ Location: {job.get('location')}
 Description:
 {job.get('description')}
 
-Candidate CV:
-{cv_text}
-
-Candidate Cover Letter:
-{cover_text}
+Candidate {document_type}:
+{source_text}
 """.strip()
 
     response = requests.post(
@@ -341,15 +404,14 @@ if jobs and keywords:
                             "CV",
                             job,
                             cv_text,
-                            cover_text,
                         )
-                        pdf_bytes = create_pdf_bytes(
+                        docx_bytes = create_docx_bytes(
                             f"CV - {job['title']} at {job['company']}",
                             cv_generated,
                         )
                         generated_docs.setdefault(job_id, {})["cv"] = {
                             "text": cv_generated,
-                            "pdf": pdf_bytes,
+                            "docx": docx_bytes,
                         }
                         add_status("CV generation complete.")
                     except requests.RequestException as exc:
@@ -368,16 +430,15 @@ if jobs and keywords:
                             model_name,
                             "cover letter",
                             job,
-                            cv_text,
                             cover_text,
                         )
-                        pdf_bytes = create_pdf_bytes(
+                        docx_bytes = create_docx_bytes(
                             f"Cover Letter - {job['title']} at {job['company']}",
                             cover_generated,
                         )
                         generated_docs.setdefault(job_id, {})["cover"] = {
                             "text": cover_generated,
-                            "pdf": pdf_bytes,
+                            "docx": docx_bytes,
                         }
                         add_status("Cover letter generation complete.")
                     except requests.RequestException as exc:
@@ -388,18 +449,18 @@ if jobs and keywords:
             doc_outputs = generated_docs.get(job_id, {})
             if doc_outputs.get("cv"):
                 st.download_button(
-                    "Download CV PDF",
-                    data=doc_outputs["cv"]["pdf"],
-                    file_name=f"cv_{job_id}.pdf",
-                    mime="application/pdf",
+                    "Download CV DOCX",
+                    data=doc_outputs["cv"]["docx"],
+                    file_name=f"cv_{job_id}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     key=f"download_cv_{job_id}",
                 )
             if doc_outputs.get("cover"):
                 st.download_button(
-                    "Download cover letter PDF",
-                    data=doc_outputs["cover"]["pdf"],
-                    file_name=f"cover_letter_{job_id}.pdf",
-                    mime="application/pdf",
+                    "Download cover letter DOCX",
+                    data=doc_outputs["cover"]["docx"],
+                    file_name=f"cover_letter_{job_id}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     key=f"download_cover_{job_id}",
                 )
 else:
