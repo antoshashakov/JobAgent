@@ -12,6 +12,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 LINK_STORE = Path("user_links.json")
+API_KEY_STORE = Path("user_api_key.json")
 GOOGLE_DOC_PATTERN = re.compile(r"docs.google.com/document/d/([a-zA-Z0-9_-]+)")
 
 
@@ -66,6 +67,20 @@ def load_links() -> dict[str, str]:
 
 def save_links(links: dict[str, str]) -> None:
     LINK_STORE.write_text(json.dumps(links, indent=2), encoding="utf-8")
+
+
+def load_api_key() -> str:
+    if API_KEY_STORE.exists():
+        payload = json.loads(API_KEY_STORE.read_text(encoding="utf-8"))
+        return payload.get("api_key", "")
+    return ""
+
+
+def save_api_key(api_key: str) -> None:
+    API_KEY_STORE.write_text(
+        json.dumps({"api_key": api_key}, indent=2),
+        encoding="utf-8",
+    )
 
 
 def extract_google_doc_id(link: str) -> str | None:
@@ -163,23 +178,47 @@ Candidate Cover Letter:
 st.set_page_config(page_title="Job Match Dashboard", layout="wide")
 st.title("Job Match Dashboard")
 
-with st.sidebar:
-    st.header("Inputs")
-    db_path = st.text_input("SQLite DB path", value="jobs.db")
-    api_key = st.text_input("OpenAI API key", type="password")
-    model_name = st.text_input("OpenAI model", value="gpt-4o-mini")
-    st.divider()
-    st.subheader("Generation status")
-    status_placeholder = st.empty()
-
-stored_links = load_links()
 status_messages = st.session_state.setdefault("status_messages", [])
+status_placeholder = st.sidebar.empty()
 
 
 def add_status(message: str) -> None:
     timestamp = datetime.now().strftime("%H:%M:%S")
     status_messages.append(f"[{timestamp}] {message}")
     status_placeholder.markdown("\n".join(f"- {msg}" for msg in status_messages[-6:]))
+
+
+with st.sidebar:
+    st.header("Inputs")
+    db_path = st.text_input("SQLite DB path", value="jobs.db")
+    stored_api_key = load_api_key()
+    replace_api_key = st.checkbox(
+        "Replace saved OpenAI API key",
+        value=not stored_api_key,
+    )
+    api_key = stored_api_key
+    if replace_api_key:
+        api_key = st.text_input(
+            "OpenAI API key",
+            type="password",
+            value=stored_api_key,
+        )
+    else:
+        st.caption(
+            "Using saved OpenAI API key. Check the box above to update it."
+        )
+    if st.button("Save API key"):
+        if not api_key.strip():
+            st.error("Enter an API key before saving.")
+        else:
+            save_api_key(api_key.strip())
+            add_status("Saved OpenAI API key locally.")
+            st.success("API key saved locally.")
+    model_name = st.text_input("OpenAI model", value="gpt-4o-mini")
+    st.divider()
+    st.subheader("Generation status")
+
+stored_links = load_links()
 
 
 st.header("Step 1: CV and cover letter links")
