@@ -4,8 +4,9 @@ import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
+import tempfile
 
-import pandas as pd
 import requests
 import streamlit as st
 from docx import Document
@@ -36,10 +37,6 @@ def score_job(job_text: str, keywords: set[str]) -> tuple[int, int]:
     score = round((matched / len(keywords)) * 100)
     return score, matched
 
-
-def score_style(value: int) -> str:
-    color = "green" if value > 50 else "red"
-    return f"color: {color}; font-weight: 600;"
 
 
 def load_jobs(db_path: str) -> list[dict]:
@@ -184,6 +181,276 @@ def create_docx_bytes(title: str, body: str) -> bytes:
     return buffer.read()
 
 
+def _pdf_escape(text: str) -> str:
+    return text.replace('\\', r'\\\\').replace('(', r'\(').replace(')', r'\)')
+
+
+def create_pdf_bytes(body: str) -> bytes:
+    lines = body.splitlines() or [""]
+    wrapped_lines: list[str] = []
+    max_chars = 95
+    for line in lines:
+        if not line.strip():
+            wrapped_lines.append("")
+            continue
+        words = line.split()
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                wrapped_lines.append(current)
+                current = word
+        if current:
+            wrapped_lines.append(current)
+
+    lines_per_page = 45
+    pages = [wrapped_lines[i:i + lines_per_page] for i in range(0, len(wrapped_lines), lines_per_page)] or [[""]]
+
+    objects: list[str] = []
+    objects.append('<< /Type /Catalog /Pages 2 0 R >>')
+
+    page_ids: list[int] = []
+    content_ids: list[int] = []
+    font_id = 0
+
+    for _ in pages:
+        page_ids.append(len(objects) + 1)
+        objects.append('')
+        content_ids.append(len(objects) + 1)
+        objects.append('')
+
+    font_id = len(objects) + 1
+    objects.append('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+
+    kids = ' '.join(f'{pid} 0 R' for pid in page_ids)
+    objects[1] = f'<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>'
+
+    for idx, page_lines in enumerate(pages):
+        page_id = page_ids[idx]
+        content_id = content_ids[idx]
+        content_parts = ['BT', '/F1 11 Tf', '72 760 Td', '16 TL']
+        for line in page_lines:
+            content_parts.append(f'({_pdf_escape(line)}) Tj')
+            content_parts.append('T*')
+        content_parts.append('ET')
+        stream = '\n'.join(content_parts)
+        objects[content_id - 1] = f'<< /Length {len(stream.encode("utf-8"))} >>\nstream\n{stream}\nendstream'
+        objects[page_id - 1] = (
+            f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] '
+            f'/Resources << /Font << /F1 {font_id} 0 R >> >> /Contents {content_id} 0 R >>'
+        )
+
+    pdf_bytes = b'%PDF-1.4\n'
+    offsets = [0]
+    for i, obj in enumerate(objects, start=1):
+        offsets.append(len(pdf_bytes))
+        pdf_bytes += f'{i} 0 obj\n{obj}\nendobj\n'.encode('utf-8')
+
+    xref_start = len(pdf_bytes)
+    pdf_bytes += f'xref\n0 {len(objects) + 1}\n'.encode('utf-8')
+    pdf_bytes += b'0000000000 65535 f \n'
+    for off in offsets[1:]:
+        pdf_bytes += f'{off:010d} 00000 n \n'.encode('utf-8')
+
+    pdf_bytes += (
+        f'trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_start}\n%%EOF'
+    ).encode('utf-8')
+    return pdf_bytes
+
+
+def parse_resume_profile(cv_text: str) -> dict[str, str]:
+    email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", cv_text)
+    phone_match = re.search(r"(?:\+?\d[\d\s().-]{7,}\d)", cv_text)
+    lines = [line.strip() for line in cv_text.splitlines() if line.strip()]
+    name = lines[0] if lines else ""
+    location = ""
+    for line in lines[:10]:
+        if any(token in line.lower() for token in ["city", "state", "country"]):
+            location = line
+            break
+    return {
+        "name": name,
+        "email": email_match.group(0) if email_match else "",
+        "phone": phone_match.group(0) if phone_match else "",
+        "location": location,
+    }
+
+
+def extract_apply_url(posting_url: str) -> str:
+    if not posting_url:
+        return ""
+    parsed = urlparse(posting_url)
+    if "jobs.lever.co" in parsed.netloc and not parsed.path.startswith("/apply"):
+        parts = [part for part in parsed.path.split('/') if part]
+        if len(parts) >= 2:
+            return f"https://jobs.lever.co/{parts[0]}/apply/{parts[-1]}"
+    return posting_url
+
+
+def openai_json_response(api_key: str, model: str, system_prompt: str, user_prompt: str) -> dict:
+    response = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "model": model,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0,
+        },
+        timeout=90,
+    )
+    response.raise_for_status()
+    payload = response.json()["choices"][0]["message"]["content"]
+    return json.loads(payload)
+
+
+def autofill_application_with_ai(
+    api_key: str,
+    model: str,
+    apply_url: str,
+    profile: dict[str, str],
+    resume_bytes: bytes,
+    cover_pdf_bytes: bytes,
+) -> str:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise RuntimeError(
+            "Playwright is required for AI autofill. Install with: pip install playwright && playwright install chromium"
+        ) from exc
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        resume_path = Path(tmp_dir) / "resume.docx"
+        cover_path = Path(tmp_dir) / "cover_letter.pdf"
+        resume_path.write_bytes(resume_bytes)
+        cover_path.write_bytes(cover_pdf_bytes)
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            page = browser.new_page()
+            page.goto(apply_url, wait_until="domcontentloaded", timeout=90000)
+            page.wait_for_timeout(2000)
+
+            form_metadata = page.evaluate(
+                """
+() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+
+  const fields = [];
+  const selector = 'input, textarea, select';
+  document.querySelectorAll(selector).forEach((el, idx) => {
+    if (!visible(el) || el.disabled || el.readOnly) return;
+    const tag = el.tagName.toLowerCase();
+    const type = (el.type || '').toLowerCase();
+    if (tag === 'input' && ['hidden', 'submit', 'button', 'reset', 'checkbox', 'radio'].includes(type)) return;
+
+    const fillId = `ai-fill-${idx}`;
+    el.setAttribute('data-ai-fill-id', fillId);
+
+    const labelEl = el.labels && el.labels.length ? el.labels[0] : null;
+    const parentLabel = el.closest('label');
+    const aria = el.getAttribute('aria-label') || '';
+    const label = (labelEl ? labelEl.innerText : '') || (parentLabel ? parentLabel.innerText : '') || aria || '';
+
+    fields.push({
+      fill_id: fillId,
+      tag,
+      type,
+      name: el.name || '',
+      id: el.id || '',
+      placeholder: el.placeholder || '',
+      label: label.trim(),
+      accept: el.accept || '',
+      required: !!el.required,
+      options: tag === 'select' ? Array.from(el.options).map(o => ({value: o.value, text: (o.textContent || '').trim()})) : []
+    });
+  });
+  return fields;
+}
+                """
+            )
+
+            if not form_metadata:
+                browser.close()
+                raise RuntimeError("No fillable form fields found on the application page.")
+
+            system_prompt = "You map job-application form fields to candidate values. Return strict JSON only."
+            user_prompt = f"""
+Candidate profile:
+{json.dumps(profile, indent=2)}
+
+Form fields:
+{json.dumps(form_metadata, indent=2)}
+
+Return JSON with:
+- text_field_values: array of {{fill_id, value}} for text/textarea/select fields only
+- resume_file_fill_id: fill_id of file input for resume (or "")
+- cover_letter_file_fill_id: fill_id of file input for cover letter (or "")
+
+Rules:
+- Fill only when confident.
+- For selects, choose an existing option value if possible.
+- Prefer resume upload fields labeled resume/cv.
+- Prefer cover-letter upload fields labeled cover letter.
+"""
+            mapping = openai_json_response(api_key, model, system_prompt, user_prompt)
+
+            for item in mapping.get("text_field_values", []):
+                fill_id = item.get("fill_id", "")
+                value = str(item.get("value", "")).strip()
+                if not fill_id or not value:
+                    continue
+                locator = page.locator(f'[data-ai-fill-id="{fill_id}"]')
+                if locator.count() == 0:
+                    continue
+                tag_name = locator.first.evaluate("el => el.tagName.toLowerCase()")
+                if tag_name == "select":
+                    option_values = locator.first.evaluate("el => Array.from(el.options).map(o => o.value)")
+                    if value in option_values:
+                        locator.first.select_option(value=value)
+                    else:
+                        text_match = locator.first.evaluate(
+                            "(el, v) => { const opt = Array.from(el.options).find(o => (o.textContent || '').trim().toLowerCase() === v.toLowerCase()); return opt ? opt.value : ''; }",
+                            value,
+                        )
+                        if text_match:
+                            locator.first.select_option(value=text_match)
+                else:
+                    locator.first.fill(value)
+
+            resume_fill_id = mapping.get("resume_file_fill_id", "")
+            cover_fill_id = mapping.get("cover_letter_file_fill_id", "")
+
+            if resume_fill_id:
+                locator = page.locator(f'[data-ai-fill-id="{resume_fill_id}"]')
+                if locator.count() > 0:
+                    locator.first.set_input_files(str(resume_path))
+
+            if cover_fill_id:
+                locator = page.locator(f'[data-ai-fill-id="{cover_fill_id}"]')
+                if locator.count() > 0:
+                    locator.first.set_input_files(str(cover_path))
+
+            page.bring_to_front()
+            page.wait_for_timeout(120000)
+            browser.close()
+
+            filled_count = len(mapping.get("text_field_values", []))
+            return (
+                f"Autofill complete: attempted {filled_count} fields and uploads. "
+                "If a captcha appeared, you had 2 minutes to complete captcha and submit manually."
+            )
+
+
 def openai_generate_document(
     api_key: str,
     model: str,
@@ -317,7 +584,7 @@ if st.button("Save links"):
     stored_links = updated_links
 
 st.divider()
-st.header("Step 2: Top 5 job matches")
+st.header("Top 5 job matches")
 
 cv_text = ""
 cover_text = ""
@@ -366,20 +633,8 @@ if jobs and keywords:
 
     ranked.sort(key=lambda item: item["score"], reverse=True)
     top_ranked = ranked[:5]
-    top_ranked_df = pd.DataFrame(top_ranked).rename(
-        columns={
-            "score": "Relevance Score",
-            "title": "Title",
-            "company": "Company",
-            "location": "Location",
-            "url": "Posting Link",
-        }
-    )
-
-    styled_ranked = top_ranked_df.style.applymap(score_style, subset=["Relevance Score"])
 
     st.subheader("Top 5 matches")
-    st.dataframe(styled_ranked, use_container_width=True)
 
     for job in top_ranked:
         job_id = job["id"]
@@ -389,79 +644,88 @@ if jobs and keywords:
             f"Location: {job['location']}  \n"
             f"[View posting]({job['url']})"
         )
-        col_cv, col_cover, col_download = st.columns([1, 1, 2])
+        if st.button("Generate cover letter", key=f"cover_{job_id}"):
+            if not api_key:
+                st.error("Add your OpenAI API key in the sidebar.")
+            else:
+                add_status(f"Generating cover letter for {job['title']}...")
+                try:
+                    cover_generated = openai_generate_document(
+                        api_key,
+                        model_name,
+                        "cover letter",
+                        job,
+                        cover_text,
+                    )
+                    generated_docs[job_id] = {
+                        "title": job["title"],
+                        "company": job["company"],
+                        "url": job["url"],
+                        "draft_text": cover_generated,
+                    }
+                    add_status("Cover letter generation complete.")
+                except requests.RequestException as exc:
+                    st.error(f"Cover letter generation failed: {exc}")
+                    add_status("Cover letter generation failed.")
 
-        with col_cv:
-            if st.button("Generate CV", key=f"cv_{job_id}"):
-                if not api_key:
-                    st.error("Add your OpenAI API key in the sidebar.")
-                else:
-                    add_status(f"Generating CV for {job['title']}...")
-                    try:
-                        cv_generated = openai_generate_document(
-                            api_key,
-                            model_name,
-                            "CV",
-                            job,
-                            cv_text,
-                        )
-                        docx_bytes = create_docx_bytes(
-                            f"CV - {job['title']} at {job['company']}",
-                            cv_generated,
-                        )
-                        generated_docs.setdefault(job_id, {})["cv"] = {
-                            "text": cv_generated,
-                            "docx": docx_bytes,
-                        }
-                        add_status("CV generation complete.")
-                    except requests.RequestException as exc:
-                        st.error(f"CV generation failed: {exc}")
-                        add_status("CV generation failed.")
+        draft = generated_docs.get(job_id)
+        if draft:
+            st.subheader("Cover letter draft")
+            edited_text = st.text_area(
+                "Edit your generated cover letter",
+                value=draft.get("draft_text", ""),
+                height=360,
+                key=f"editor_{job_id}",
+            )
+            generated_docs[job_id]["draft_text"] = edited_text
 
-        with col_cover:
-            if st.button("Generate cover letter", key=f"cover_{job_id}"):
-                if not api_key:
-                    st.error("Add your OpenAI API key in the sidebar.")
-                else:
-                    add_status(f"Generating cover letter for {job['title']}...")
-                    try:
-                        cover_generated = openai_generate_document(
-                            api_key,
-                            model_name,
-                            "cover letter",
-                            job,
-                            cover_text,
-                        )
-                        docx_bytes = create_docx_bytes(
-                            f"Cover Letter - {job['title']} at {job['company']}",
-                            cover_generated,
-                        )
-                        generated_docs.setdefault(job_id, {})["cover"] = {
-                            "text": cover_generated,
-                            "docx": docx_bytes,
-                        }
-                        add_status("Cover letter generation complete.")
-                    except requests.RequestException as exc:
-                        st.error(f"Cover letter generation failed: {exc}")
-                        add_status("Cover letter generation failed.")
+            pdf_bytes = create_pdf_bytes(edited_text)
 
-        with col_download:
-            doc_outputs = generated_docs.get(job_id, {})
-            if doc_outputs.get("cv"):
+            cv_docx_bytes = create_docx_bytes("Resume", cv_text)
+
+            download_col, apply_col = st.columns(2)
+            with download_col:
                 st.download_button(
-                    "Download CV DOCX",
-                    data=doc_outputs["cv"]["docx"],
-                    file_name=f"cv_{job_id}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"download_cv_{job_id}",
+                    "Download cover letter PDF",
+                    data=pdf_bytes,
+                    file_name=f"cover_letter_{job_id}.pdf",
+                    mime="application/pdf",
+                    key=f"download_cover_pdf_{job_id}",
                 )
-            if doc_outputs.get("cover"):
-                st.download_button(
-                    "Download cover letter DOCX",
-                    data=doc_outputs["cover"]["docx"],
-                    file_name=f"cover_letter_{job_id}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"download_cover_{job_id}",
-                )
+
+            with apply_col:
+                apply_url = extract_apply_url(job["url"])
+                profile = parse_resume_profile(cv_text)
+                if st.button("Apply now (AI autofill + upload)", key=f"apply_{job_id}"):
+                    if not api_key:
+                        st.error("Add your OpenAI API key in the sidebar.")
+                    else:
+                        try:
+                            status = autofill_application_with_ai(
+                                api_key=api_key,
+                                model=model_name,
+                                apply_url=apply_url,
+                                profile=profile,
+                                resume_bytes=cv_docx_bytes,
+                                cover_pdf_bytes=pdf_bytes,
+                            )
+                            add_status(status)
+                            st.success(status)
+                        except Exception as exc:
+                            st.error(f"AI autofill failed: {exc}")
+                            add_status("AI autofill failed.")
+
+                st.link_button("Open application page", apply_url)
+                with st.expander("Autofill preview (extracted from resume)"):
+                    st.write(
+                        {
+                            "full_name": profile["name"],
+                            "email": profile["email"],
+                            "phone": profile["phone"],
+                            "location": profile["location"],
+                            "resume_attached": bool(cv_docx_bytes),
+                            "cover_letter_attached": bool(pdf_bytes),
+                        }
+                    )
 else:
     st.info("No jobs to display yet. Ensure the database has scraped jobs.")
