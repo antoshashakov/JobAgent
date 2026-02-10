@@ -5,7 +5,6 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
-import tempfile
 
 import requests
 import streamlit as st
@@ -185,8 +184,8 @@ def _pdf_escape(text: str) -> str:
     return text.replace('\\', r'\\\\').replace('(', r'\(').replace(')', r'\)')
 
 
-def create_pdf_bytes(body: str) -> bytes:
-    lines = body.splitlines() or [""]
+def create_pdf_bytes(title: str, body: str) -> bytes:
+    lines = [title, ""] + (body.splitlines() or [""])
     wrapped_lines: list[str] = []
     max_chars = 95
     for line in lines:
@@ -283,172 +282,10 @@ def extract_apply_url(posting_url: str) -> str:
         return ""
     parsed = urlparse(posting_url)
     if "jobs.lever.co" in parsed.netloc and not parsed.path.startswith("/apply"):
-        parts = [part for part in parsed.path.split('/') if part]
-        if len(parts) >= 2:
-            return f"https://jobs.lever.co/{parts[0]}/apply/{parts[-1]}"
+        path = parsed.path.strip("/")
+        if path:
+            return f"https://jobs.lever.co/{parsed.netloc.split('.')[-2]}/apply/{path.split('/')[-1]}"
     return posting_url
-
-
-def openai_json_response(api_key: str, model: str, system_prompt: str, user_prompt: str) -> dict:
-    response = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "model": model,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0,
-        },
-        timeout=90,
-    )
-    response.raise_for_status()
-    payload = response.json()["choices"][0]["message"]["content"]
-    return json.loads(payload)
-
-
-def autofill_application_with_ai(
-    api_key: str,
-    model: str,
-    apply_url: str,
-    profile: dict[str, str],
-    resume_bytes: bytes,
-    cover_pdf_bytes: bytes,
-) -> str:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError(
-            "Playwright is required for AI autofill. Install with: pip install playwright && playwright install chromium"
-        ) from exc
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        resume_path = Path(tmp_dir) / "resume.docx"
-        cover_path = Path(tmp_dir) / "cover_letter.pdf"
-        resume_path.write_bytes(resume_bytes)
-        cover_path.write_bytes(cover_pdf_bytes)
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
-            page = browser.new_page()
-            page.goto(apply_url, wait_until="domcontentloaded", timeout=90000)
-            page.wait_for_timeout(2000)
-
-            form_metadata = page.evaluate(
-                """
-() => {
-  const visible = (el) => {
-    const rect = el.getBoundingClientRect();
-    const style = window.getComputedStyle(el);
-    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-  };
-
-  const fields = [];
-  const selector = 'input, textarea, select';
-  document.querySelectorAll(selector).forEach((el, idx) => {
-    if (!visible(el) || el.disabled || el.readOnly) return;
-    const tag = el.tagName.toLowerCase();
-    const type = (el.type || '').toLowerCase();
-    if (tag === 'input' && ['hidden', 'submit', 'button', 'reset', 'checkbox', 'radio'].includes(type)) return;
-
-    const fillId = `ai-fill-${idx}`;
-    el.setAttribute('data-ai-fill-id', fillId);
-
-    const labelEl = el.labels && el.labels.length ? el.labels[0] : null;
-    const parentLabel = el.closest('label');
-    const aria = el.getAttribute('aria-label') || '';
-    const label = (labelEl ? labelEl.innerText : '') || (parentLabel ? parentLabel.innerText : '') || aria || '';
-
-    fields.push({
-      fill_id: fillId,
-      tag,
-      type,
-      name: el.name || '',
-      id: el.id || '',
-      placeholder: el.placeholder || '',
-      label: label.trim(),
-      accept: el.accept || '',
-      required: !!el.required,
-      options: tag === 'select' ? Array.from(el.options).map(o => ({value: o.value, text: (o.textContent || '').trim()})) : []
-    });
-  });
-  return fields;
-}
-                """
-            )
-
-            if not form_metadata:
-                browser.close()
-                raise RuntimeError("No fillable form fields found on the application page.")
-
-            system_prompt = "You map job-application form fields to candidate values. Return strict JSON only."
-            user_prompt = f"""
-Candidate profile:
-{json.dumps(profile, indent=2)}
-
-Form fields:
-{json.dumps(form_metadata, indent=2)}
-
-Return JSON with:
-- text_field_values: array of {{fill_id, value}} for text/textarea/select fields only
-- resume_file_fill_id: fill_id of file input for resume (or "")
-- cover_letter_file_fill_id: fill_id of file input for cover letter (or "")
-
-Rules:
-- Fill only when confident.
-- For selects, choose an existing option value if possible.
-- Prefer resume upload fields labeled resume/cv.
-- Prefer cover-letter upload fields labeled cover letter.
-"""
-            mapping = openai_json_response(api_key, model, system_prompt, user_prompt)
-
-            for item in mapping.get("text_field_values", []):
-                fill_id = item.get("fill_id", "")
-                value = str(item.get("value", "")).strip()
-                if not fill_id or not value:
-                    continue
-                locator = page.locator(f'[data-ai-fill-id="{fill_id}"]')
-                if locator.count() == 0:
-                    continue
-                tag_name = locator.first.evaluate("el => el.tagName.toLowerCase()")
-                if tag_name == "select":
-                    option_values = locator.first.evaluate("el => Array.from(el.options).map(o => o.value)")
-                    if value in option_values:
-                        locator.first.select_option(value=value)
-                    else:
-                        text_match = locator.first.evaluate(
-                            "(el, v) => { const opt = Array.from(el.options).find(o => (o.textContent || '').trim().toLowerCase() === v.toLowerCase()); return opt ? opt.value : ''; }",
-                            value,
-                        )
-                        if text_match:
-                            locator.first.select_option(value=text_match)
-                else:
-                    locator.first.fill(value)
-
-            resume_fill_id = mapping.get("resume_file_fill_id", "")
-            cover_fill_id = mapping.get("cover_letter_file_fill_id", "")
-
-            if resume_fill_id:
-                locator = page.locator(f'[data-ai-fill-id="{resume_fill_id}"]')
-                if locator.count() > 0:
-                    locator.first.set_input_files(str(resume_path))
-
-            if cover_fill_id:
-                locator = page.locator(f'[data-ai-fill-id="{cover_fill_id}"]')
-                if locator.count() > 0:
-                    locator.first.set_input_files(str(cover_path))
-
-            page.bring_to_front()
-            page.wait_for_timeout(120000)
-            browser.close()
-
-            filled_count = len(mapping.get("text_field_values", []))
-            return (
-                f"Autofill complete: attempted {filled_count} fields and uploads. "
-                "If a captcha appeared, you had 2 minutes to complete captcha and submit manually."
-            )
 
 
 def openai_generate_document(
@@ -679,7 +516,10 @@ if jobs and keywords:
             )
             generated_docs[job_id]["draft_text"] = edited_text
 
-            pdf_bytes = create_pdf_bytes(edited_text)
+            pdf_bytes = create_pdf_bytes(
+                f"Cover Letter - {job['title']} at {job['company']}",
+                edited_text,
+            )
 
             cv_docx_bytes = create_docx_bytes("Resume", cv_text)
 
@@ -695,27 +535,8 @@ if jobs and keywords:
 
             with apply_col:
                 apply_url = extract_apply_url(job["url"])
+                st.link_button("Apply now", apply_url)
                 profile = parse_resume_profile(cv_text)
-                if st.button("Apply now (AI autofill + upload)", key=f"apply_{job_id}"):
-                    if not api_key:
-                        st.error("Add your OpenAI API key in the sidebar.")
-                    else:
-                        try:
-                            status = autofill_application_with_ai(
-                                api_key=api_key,
-                                model=model_name,
-                                apply_url=apply_url,
-                                profile=profile,
-                                resume_bytes=cv_docx_bytes,
-                                cover_pdf_bytes=pdf_bytes,
-                            )
-                            add_status(status)
-                            st.success(status)
-                        except Exception as exc:
-                            st.error(f"AI autofill failed: {exc}")
-                            add_status("AI autofill failed.")
-
-                st.link_button("Open application page", apply_url)
                 with st.expander("Autofill preview (extracted from resume)"):
                     st.write(
                         {
@@ -726,6 +547,10 @@ if jobs and keywords:
                             "resume_attached": bool(cv_docx_bytes),
                             "cover_letter_attached": bool(pdf_bytes),
                         }
+                    )
+                    st.caption(
+                        "The app prebuilds your final files from your latest draft and resume text so"
+                        " they are ready to upload in the application form."
                     )
 else:
     st.info("No jobs to display yet. Ensure the database has scraped jobs.")
