@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job Match Dashboard</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #1a0033;
+      color: #ffffff;
+      padding: 20px;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+
+    header {
+      background: linear-gradient(135deg, #9d4edd 0%, #7209b7 100%);
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 30px;
+      border-bottom: 2px solid #9d4edd;
+    }
+
+    header h1 {
+      font-size: 28px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    header p {
+      font-size: 14px;
+      opacity: 0.9;
+    }
+
+    .jobs-grid {
+      display: grid;
+      gap: 20px;
+    }
+
+    .job-card {
+      background-color: #0f001f;
+      border: 1px solid #5a0d82;
+      border-radius: 8px;
+      padding: 20px;
+      transition: all 0.3s;
+    }
+
+    .job-card:hover {
+      border-color: #9d4edd;
+      box-shadow: 0 0 15px rgba(157, 78, 221, 0.3);
+    }
+
+    .job-card h3 {
+      color: #9d4edd;
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+
+    .job-meta {
+      display: flex;
+      gap: 15px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+      font-size: 14px;
+      opacity: 0.85;
+    }
+
+    .job-meta span {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .job-description {
+      font-size: 14px;
+      margin-bottom: 15px;
+      line-height: 1.5;
+      max-height: 100px;
+      overflow-y: auto;
+      padding-right: 10px;
+    }
+
+    .job-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      padding: 10px 16px;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background-color: #9d4edd;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background-color: #7209b7;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(157, 78, 221, 0.3);
+    }
+
+    .btn-link {
+      background-color: #5a0d82;
+      color: #9d4edd;
+    }
+
+    .btn-link:hover {
+      background-color: #7209b7;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      font-size: 16px;
+    }
+
+    .error {
+      background-color: #5a0d0d;
+      border: 1px solid #9d0d0d;
+      padding: 15px;
+      border-radius: 4px;
+      margin-bottom: 20px;
+    }
+
+    .empty-state {
+      background-color: #0f001f;
+      border: 1px solid #5a0d82;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+    }
+
+    .empty-state p {
+      opacity: 0.7;
+      margin-bottom: 15px;
+    }
+
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.7);
+    }
+
+    .modal-content {
+      background-color: #0f001f;
+      margin: 5% auto;
+      padding: 25px;
+      border: 1px solid #5a0d82;
+      border-radius: 8px;
+      width: 80%;
+      max-width: 600px;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      border-bottom: 1px solid #5a0d82;
+      padding-bottom: 15px;
+    }
+
+    .modal-header h2 {
+      color: #9d4edd;
+      font-size: 20px;
+    }
+
+    .close-btn {
+      background: none;
+      border: none;
+      color: #9d4edd;
+      font-size: 28px;
+      cursor: pointer;
+    }
+
+    .close-btn:hover {
+      color: #7209b7;
+    }
+
+    textarea {
+      width: 100%;
+      padding: 10px;
+      background-color: #2d0052;
+      border: 1px solid #5a0d82;
+      border-radius: 4px;
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 13px;
+      resize: vertical;
+      margin-bottom: 15px;
+    }
+
+    .form-group {
+      margin-bottom: 15px;
+    }
+
+    .form-group label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 500;
+      font-size: 13px;
+    }
+
+    .form-group input {
+      width: 100%;
+      padding: 8px;
+      background-color: #2d0052;
+      border: 1px solid #5a0d82;
+      border-radius: 4px;
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 13px;
+    }
+
+    .readonly-input {
+      opacity: 0.7 !important;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 15px;
+    }
+
+    .btn-group .btn {
+      flex: 1;
+    }
+
+    .status-message {
+      padding: 10px 15px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+
+    .status-message.success {
+      background-color: #0d5a0d;
+      border: 1px solid #0d9d0d;
+    }
+
+    .status-message.error {
+      background-color: #5a0d0d;
+      border: 1px solid #9d0d0d;
+    }
+
+    .status-message.info {
+      background-color: #0d3d5a;
+      border: 1px solid #0d7d9d;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid #5a0d82;
+      border-top-color: #9d4edd;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .spinner-inline {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid #0d7d9d;
+      border-top-color: #0d9d7d;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 10px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>💼 Job Match Dashboard</h1>
+      <p>Discover top job matches and generate tailored cover letters</p>
+    </header>
+
+    <div id="statusContainer"></div>
+
+    <div id="loadingContainer" class="loading" style="display: none;">
+      <div class="spinner"></div> Loading jobs...
+    </div>
+
+    <div id="jobsContainer" class="jobs-grid"></div>
+
+    <div id="emptyState" class="empty-state" style="display: none;">
+      <p>No jobs available yet</p>
+      <p>Make sure the backend API server is running on http://localhost:5000</p>
+    </div>
+  </div>
+
+  <!-- Cover Letter Modal -->
+  <div id="coverLetterModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Generate Cover Letter</h2>
+        <button class="close-btn" id="closeModalBtn">&times;</button>
+      </div>
+      <div id="modalStatus"></div>
+      <div class="form-group">
+        <label>Job</label>
+        <input type="text" id="modalJobTitle" readonly class="readonly-input">
+      </div>
+      <div class="form-group">
+        <label>Cover Letter Title</label>
+        <input type="text" id="coverLetterTitle" value="Cover Letter" placeholder="e.g., Cover Letter">
+      </div>
+      <div class="form-group">
+        <label>Generated Cover Letter</label>
+        <textarea id="coverLetterText" rows="12" placeholder="Generated cover letter will appear here..."></textarea>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-link" id="downloadBtn">📥 Download PDF</button>
+        <button class="btn btn-primary" id="doneBtn">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>

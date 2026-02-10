@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job Match Assistant</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Job Match Assistant</h1>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="jobs">Jobs</button>
+      <button class="tab-btn" data-tab="setup">Configure Links</button>
+      <button class="tab-btn" data-tab="settings">AI Settings</button>
+    </nav>
+
+    <!-- Jobs Tab -->
+    <section id="jobs" class="tab-content active">
+      <h2>Top 5 Jobs</h2>
+      <div id="jobsList" class="jobs-list"></div>
+      <div id="jobsLoading" class="empty-state" style="display: none;">
+        <p>Loading jobs...</p>
+      </div>
+      <div id="jobsError" class="empty-state">
+        <p>Unable to load jobs. Make sure the API server is running on localhost:5000</p>
+      </div>
+      <button id="dashboardBtn" class="btn btn-primary" style="width: 100%; margin-top: 10px;">
+        📊 Open Full Dashboard
+      </button>
+    </section>
+
+    <!-- Setup Tab -->
+    <section id="setup" class="tab-content">
+      <h2>Configure Your Documents</h2>
+      <div class="form-group">
+        <label>CV Google Doc Link:</label>
+        <input type="url" id="cvLink" placeholder="https://docs.google.com/document/d/...">
+        <small>Must be a shareable document</small>
+      </div>
+      <div class="form-group">
+        <label>Cover Letter Google Doc Link:</label>
+        <input type="url" id="coverLink" placeholder="https://docs.google.com/document/d/...">
+      </div>
+      <button id="saveLinksBtn" class="btn btn-primary">Save Links</button>
+      <div id="setupStatus" class="status"></div>
+    </section>
+
+    <!-- AI Settings Tab -->
+    <section id="settings" class="tab-content">
+      <h2>Settings</h2>
+      <div class="form-group">
+        <label>OpenAI API Key:</label>
+        <input type="password" id="apiKey" placeholder="sk-...">
+        <small>Stored locally in your browser</small>
+      </div>
+      <div class="form-group">
+        <label>OpenAI Model:</label>
+        <select id="modelName">
+          <option value="gpt-4o-mini">gpt-4o-mini (recommended)</option>
+          <option value="gpt-4">gpt-4</option>
+          <option value="gpt-4-turbo">gpt-4-turbo</option>
+        </select>
+      </div>
+      <button id="saveSettingsBtn" class="btn btn-primary">Save Settings</button>
+      <div id="settingsStatus" class="status"></div>
+    </section>
+
+    <footer>
+      <p id="statusMessage"></p>
+    </footer>
+  </div>
+
+  <script src="utils.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
