@@ -6,7 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-import pandas as pd
 import requests
 import streamlit as st
 from docx import Document
@@ -37,10 +36,6 @@ def score_job(job_text: str, keywords: set[str]) -> tuple[int, int]:
     score = round((matched / len(keywords)) * 100)
     return score, matched
 
-
-def score_style(value: int) -> str:
-    color = "green" if value > 50 else "red"
-    return f"color: {color}; font-weight: 600;"
 
 
 def load_jobs(db_path: str) -> list[dict]:
@@ -475,20 +470,8 @@ if jobs and keywords:
 
     ranked.sort(key=lambda item: item["score"], reverse=True)
     top_ranked = ranked[:5]
-    top_ranked_df = pd.DataFrame(top_ranked).rename(
-        columns={
-            "score": "Relevance Score",
-            "title": "Title",
-            "company": "Company",
-            "location": "Location",
-            "url": "Posting Link",
-        }
-    )
-
-    styled_ranked = top_ranked_df.style.applymap(score_style, subset=["Relevance Score"])
 
     st.subheader("Top 5 matches")
-    st.dataframe(styled_ranked, use_container_width=True)
 
     for job in top_ranked:
         job_id = job["id"]
