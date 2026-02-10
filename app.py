@@ -289,11 +289,11 @@ def extract_apply_url(posting_url: str) -> str:
     if not posting_url:
         return ""
     parsed = urlparse(posting_url)
-    if "jobs.lever.co" in parsed.netloc and not parsed.path.startswith("/apply"):
-        path = parsed.path.strip("/")
-        if path:
-            return f"https://jobs.lever.co/{parsed.netloc.split('.')[-2]}/apply/{path.split('/')[-1]}"
-    return posting_url
+    path = parsed.path.rstrip("/")
+    if path.endswith("/apply"):
+        return posting_url
+    apply_path = f"{path}/apply" if path else "/apply"
+    return parsed._replace(path=apply_path).geturl()
 
 
 def openai_generate_document(
