@@ -50,7 +50,13 @@ A Chrome extension version of the Job Match Assistant that helps you apply to jo
 - Use "Download PDF" to save the cover letter as a text file
 
 ## Supported Job Boards
-so far not much
+The extension works on most job posting pages, including:
+- LinkedIn Jobs
+- Indeed
+- Greenhouse
+- Lever
+- AngelList
+- And many others
 
 ## Troubleshooting
 
@@ -79,4 +85,3 @@ so far not much
 - `content-script.js` - Interacts with job posting pages
 - `background.js` - Background service worker
 - `utils.js` - Shared utility functions
-

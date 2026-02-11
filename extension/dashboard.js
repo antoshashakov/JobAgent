@@ -1,8 +1,7 @@
-const API_BASE = 'http://localhost:5000';
 let currentJobs = [];
 let currentModalJob = null;
 
-console.log('[Dashboard] Initialized with API_BASE:', API_BASE);
+console.log('[Dashboard] Initialized');
 
 // Storage utility functions for dashboard
 // NOTE: Must use chrome.storage.local to match popup.js which imports from utils.js
@@ -21,6 +20,69 @@ async function setStorageData(data) {
   return new Promise((resolve) => {
     chrome.storage.local.set(data, resolve);
   });
+}
+
+// Direct OpenAI API call for cover letter generation (no backend required)
+async function generateCoverLetterViaOpenAI(apiKey, model, job, cvText, coverTemplate) {
+  const prompt = `
+You are updating a cover letter for a job application.
+
+Rules:
+- Use ONLY the candidate's existing experience and facts. Never invent or exaggerate.
+- Preserve the candidate's voice, tone, and formatting as much as possible.
+- Make the cover letter more relevant to the job posting using only existing information.
+- Fix grammar and professionalism issues, but avoid unnecessary changes.
+- Keep line breaks and formatting using these markers only:
+  - Bold: **text**
+  - Italic: *text*
+  - Bold + italic: ***text***
+- Output plain text with the markers above. Do not add markdown headings or lists.
+- Use only the provided cover letter text. Do not add content from other documents.
+- Do NOT include a standalone job title heading at the top.
+
+Job posting:
+Title: ${job.title}
+Company: ${job.company}
+Location: ${job.location}
+Description:
+${job.description}
+
+Candidate CV:
+${cvText}
+
+Candidate Cover Letter Template:
+${coverTemplate}
+`.trim();
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a helpful assistant that edits job application documents.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      temperature: 0.2
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message || `OpenAI error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.choices[0].message.content.trim();
 }
 
 // Load jobs on page load
@@ -61,34 +123,27 @@ async function loadJobs() {
   empty.style.display = 'none';
 
   try {
-    const url = `${API_BASE}/api/jobs/top5`;
-    console.log('[Dashboard] Fetching from:', url);
-    const response = await fetch(url);
-    console.log('[Dashboard] Response status:', response.status, response.statusText);
-    
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    console.log('[Dashboard] Response data:', data);
+    const data = await getStorageData(['jobs', 'topJobs']);
+    const jobs = (data.topJobs && data.topJobs.length > 0)
+      ? data.topJobs
+      : (data.jobs || []).slice(0, 5);
 
-    if (data.success && data.jobs && data.jobs.length > 0) {
-      console.log('[Dashboard] Jobs loaded successfully, count:', data.jobs.length);
-      currentJobs = data.jobs;
-      renderJobs(data.jobs);
-      loading.style.display = 'none';
+    loading.style.display = 'none';
+
+    if (jobs.length > 0) {
+      console.log('[Dashboard] Jobs loaded from storage, count:', jobs.length);
+      currentJobs = jobs;
+      renderJobs(jobs);
     } else {
-      console.warn('[Dashboard] No jobs found or success=false');
-      loading.style.display = 'none';
+      console.warn('[Dashboard] No jobs found in storage');
       empty.style.display = 'block';
-      showStatus('No jobs found in database', 'info');
+      showStatus('No jobs available. Open the extension popup → Sources tab → click "Refresh Jobs Now".', 'info');
     }
   } catch (error) {
     console.error('[Dashboard] Error loading jobs:', error);
     loading.style.display = 'none';
     empty.style.display = 'block';
-    showStatus('Failed to connect to API server. Make sure http://localhost:5000 is running. Error: ' + error.message, 'error');
+    showStatus('Error loading jobs: ' + error.message, 'error');
   }
 }
 
@@ -206,38 +261,28 @@ async function generateCoverLetterContent(jobId) {
     console.log('[Dashboard] Calling API to generate cover letter...');
     statusDiv.innerHTML = '<div class="status-message info"><div class="spinner-inline"></div> Generating with AI...</div>';
     
-    const requestBody = {
-      api_key: storedData.apiKey,
-      model: storedData.modelName || 'gpt-4o-mini',
-      job_id: currentModalJob.id,
-      cv_text: cvText,
-      cover_template: coverTemplate
-    };
+    let coverLetter;
     
-    console.log('[Dashboard] API request body keys:', Object.keys(requestBody));
-    console.log('[Dashboard] API request URL:', `${API_BASE}/api/generate-cover-letter`);
-    
-    const response = await fetch(`${API_BASE}/api/generate-cover-letter`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
-    });
-
-    console.log('[Dashboard] API response status:', response.status);
-
-    const data = await response.json();
-    console.log('[Dashboard] API response success:', data.success);
-    
-    if (!response.ok) {
-      throw new Error(data.error || `HTTP ${response.status}`);
+    // Try OpenAI API directly first
+    try {
+      coverLetter = await generateCoverLetterViaOpenAI(
+        storedData.apiKey,
+        storedData.modelName || 'gpt-4o-mini',
+        currentModalJob,
+        cvText,
+        coverTemplate
+      );
+    } catch (openaiError) {
+      console.log('[Dashboard] OpenAI direct call failed:', openaiError.message);
+      throw openaiError;
     }
 
-    if (data.success && data.cover_letter) {
+    if (coverLetter) {
       console.log('[Dashboard] Cover letter generated successfully');
-      textarea.value = data.cover_letter;
+      textarea.value = coverLetter;
       statusDiv.innerHTML = '<div class="status-message success">✓ Personalized cover letter generated!</div>';
     } else {
-      throw new Error(data.error || 'Generation failed');
+      throw new Error('No cover letter generated');
     }
   } catch (error) {
     console.error('[Dashboard] Cover letter generation error:', error);

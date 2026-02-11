@@ -15,19 +15,21 @@
     <nav class="tabs">
       <button class="tab-btn active" data-tab="jobs">Jobs</button>
       <button class="tab-btn" data-tab="setup">Configure Links</button>
+      <button class="tab-btn" data-tab="sources">Sources</button>
       <button class="tab-btn" data-tab="settings">AI Settings</button>
     </nav>
 
     <!-- Jobs Tab -->
     <section id="jobs" class="tab-content active">
-      <h2>Top 5 Jobs</h2>
-      <div id="jobsList" class="jobs-list"></div>
+      <h2>Matching Jobs</h2>
       <div id="jobsLoading" class="empty-state" style="display: none;">
-        <p>Loading jobs...</p>
+        <p>Searching jobs based on your CV...</p>
       </div>
-      <div id="jobsError" class="empty-state">
-        <p>Unable to load jobs. Make sure the API server is running on localhost:5000</p>
+      <div id="jobsError" class="empty-state" style="display: none;">
+        <p id="jobsErrorText">Error loading jobs</p>
       </div>
+      <div id="debugInfo" class="empty-state" style="display: none; font-size: 12px; color: #666; margin-top: 10px; padding: 8px; background: #f0f0f0; border-radius: 4px;"></div>
+      <div id="jobsList" class="jobs-list"></div>
       <button id="dashboardBtn" class="btn btn-primary" style="width: 100%; margin-top: 10px;">
         📊 Open Full Dashboard
       </button>
@@ -47,6 +49,35 @@
       </div>
       <button id="saveLinksBtn" class="btn btn-primary">Save Links</button>
       <div id="setupStatus" class="status"></div>
+    </section>
+
+    <!-- Sources Tab -->
+    <section id="sources" class="tab-content">
+      <h2>Job Sources</h2>
+      <div id="scrapeStatus" class="scrape-status">
+        <span id="scrapeStatusText">Not yet scraped</span>
+      </div>
+      <div class="button-group" style="margin-bottom: 16px;">
+        <button id="refreshJobsBtn" class="btn btn-primary">Refresh Jobs Now</button>
+        <button id="regenerateSourcesBtn" class="btn">Regenerate from Resume</button>
+      </div>
+
+      <h3 class="source-heading">Greenhouse Boards</h3>
+      <div id="greenhouseList" class="source-list"></div>
+      <div class="source-add-row">
+        <input type="text" id="addGreenhouseInput" placeholder="Board token (e.g. openai)">
+        <button id="addGreenhouseBtn" class="btn">Add</button>
+      </div>
+
+      <h3 class="source-heading">Lever Handles</h3>
+      <div id="leverList" class="source-list"></div>
+      <div class="source-add-row">
+        <input type="text" id="addLeverInput" placeholder="Handle (e.g. anthropic)">
+        <button id="addLeverBtn" class="btn">Add</button>
+      </div>
+
+      <button id="resetSourcesBtn" class="btn" style="width: 100%; margin-top: 12px;">Reset to Defaults</button>
+      <div id="sourcesStatus" class="status"></div>
     </section>
 
     <!-- AI Settings Tab -->

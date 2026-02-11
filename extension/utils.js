@@ -195,6 +195,55 @@ ${JSON.stringify(formFields, null, 2)}
   return JSON.parse(data.choices[0].message.content);
 }
 
+// Smart keyword extraction — focuses on tech terms and meaningful words
+function extractSmartKeywords(text) {
+  const keywords = new Set();
+  const lowerText = text.toLowerCase();
+
+  const techTerms = [
+    'python', 'javascript', 'typescript', 'react', 'vue', 'angular', 'node',
+    'nodejs', 'java', 'c#', 'c++', 'golang', 'rust', 'swift', 'kotlin',
+    'ruby', 'php', 'scala', 'sql', 'nosql', 'mongodb', 'postgres',
+    'postgresql', 'mysql', 'redis', 'elasticsearch', 'kafka',
+    'aws', 'azure', 'gcp', 'docker', 'kubernetes', 'terraform',
+    'ai', 'ml', 'machine learning', 'deep learning', 'nlp', 'llm',
+    'data', 'analytics', 'api', 'rest', 'graphql', 'grpc',
+    'devops', 'ci/cd', 'git', 'linux',
+    'html', 'css', 'sass', 'tailwind',
+    'spring', 'django', 'flask', 'fastapi', 'express', 'rails',
+    'pytorch', 'tensorflow', 'pandas', 'numpy', 'spark',
+    'firebase', 'supabase', 'vercel', 'netlify',
+    'agile', 'scrum', 'kanban',
+    'frontend', 'backend', 'fullstack', 'full-stack', 'full stack',
+    'mobile', 'ios', 'android', 'react native', 'flutter',
+    'cloud', 'microservices', 'distributed', 'scalable',
+    'security', 'encryption', 'oauth', 'saml',
+    'product', 'design', 'ux', 'figma',
+    'fintech', 'healthtech', 'edtech', 'saas', 'b2b', 'b2c',
+    'startup', 'enterprise',
+  ];
+
+  for (const term of techTerms) {
+    if (lowerText.includes(term)) {
+      keywords.add(term);
+    }
+  }
+
+  // Add role-related terms from the CV
+  const roleTerms = [
+    'engineer', 'developer', 'architect', 'manager', 'lead', 'senior',
+    'staff', 'principal', 'director', 'analyst', 'scientist', 'consultant',
+    'intern', 'junior', 'mid-level',
+  ];
+  for (const term of roleTerms) {
+    if (lowerText.includes(term)) {
+      keywords.add(term);
+    }
+  }
+
+  return Array.from(keywords);
+}
+
 // Storage helpers
 async function getStorage(keys) {
   return new Promise((resolve) => {
@@ -207,3 +256,50 @@ async function setStorage(obj) {
     chrome.storage.local.set(obj, resolve);
   });
 }
+
+// Known Greenhouse / Lever board tokens (verified public career pages)
+// Known boards — only tokens verified against the live APIs.
+// Greenhouse: boards-api.greenhouse.io/v1/boards/{token}/jobs
+// Lever: api.lever.co/v0/postings/{handle}?mode=json
+const KNOWN_BOARDS = {
+  greenhouse: [
+    { token: "airtable", label: "Airtable" },
+    { token: "brex", label: "Brex" },
+    { token: "cloudflare", label: "Cloudflare" },
+    { token: "coinbase", label: "Coinbase" },
+    { token: "databricks", label: "Databricks" },
+    { token: "discord", label: "Discord" },
+    { token: "duolingo", label: "Duolingo" },
+    { token: "figma", label: "Figma" },
+    { token: "gusto", label: "Gusto" },
+    { token: "instacart", label: "Instacart" },
+    { token: "lyft", label: "Lyft" },
+    { token: "mongodb", label: "MongoDB" },
+    { token: "robinhood", label: "Robinhood" },
+    { token: "roblox", label: "Roblox" },
+    { token: "samsara", label: "Samsara" },
+    { token: "scaleai", label: "Scale AI" },
+    { token: "squarespace", label: "Squarespace" },
+    { token: "verkada", label: "Verkada" },
+  ],
+  lever: [
+    { token: "palantir", label: "Palantir" },
+    { token: "veeva", label: "Veeva Systems" },
+    { token: "metabase", label: "Metabase" },
+    { token: "whoop", label: "WHOOP" },
+    { token: "voleon", label: "The Voleon Group" },
+    { token: "weride", label: "WeRide" },
+  ]
+};
+
+const FALLBACK_SOURCES = {
+  greenhouse: [
+    { token: "mongodb", label: "MongoDB" },
+    { token: "cloudflare", label: "Cloudflare" },
+    { token: "coinbase", label: "Coinbase" },
+  ],
+  lever: [
+    { token: "palantir", label: "Palantir" },
+    { token: "metabase", label: "Metabase" },
+  ]
+};
